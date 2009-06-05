@@ -1,0 +1,173 @@
+package org.integrallis.twitter
+ 
+import twitter4j.User;
+import twitter4j.Twitter;
+import org.integrallis.twitter.TwitterUserType;
+import org.integrallis.twitter.TwitterUtils;
+
+global org.apache.log4j.Logger logger;
+
+declare Follower
+   user : User
+   classification : TwitterUserType
+   follows : Twitter
+   hasPicture : Boolean
+   followedBack : Boolean
+   inactive : Boolean
+   averageTweetsPerDay : Double
+   followersInCommon : Integer
+   followeesInCommon : Integer
+   score : Double
+end
+
+declare Followee
+   user : User
+   classification : TwitterUserType
+   followedBy : Twitter
+   hasPicture : Boolean
+   inactive : Boolean
+   averageTweetsPerDay : Double
+   followersInCommon : Integer
+   followeesInCommon : Integer
+   score : Double
+end
+
+rule "Extract and classify followers"
+	dialect "java"
+	when
+    	twitter : Twitter()
+    then
+        for (User user : twitter.getFollowers()) {
+		    Follower follower = new Follower();
+		    follower.setUser(user);
+		    follower.setFollows(twitter);
+		    follower.setClassification(TwitterUserType.getType(TwitterUtils.getTwitterInfluenceRatio(user)));
+		    follower.setHasPicture(TwitterUtils.hasSetProfileImage(user));
+		    follower.setFollowedBack(TwitterUtils.isFollowing(twitter, user));
+		    follower.setInactive(TwitterUtils.inactiveForTheLast(user, 30));
+		    follower.setAverageTweetsPerDay(TwitterUtils.averageTweetsPerDay(user));
+		    follower.setFollowersInCommon(TwitterUtils.followersInCommon(twitter, user));
+            follower.setFolloweesInCommon(TwitterUtils.followingInCommon(twitter, user));
+            follower.setScore(0.00);
+		    logger.info("Inserting follower => " + user.getScreenName());
+		    insert(follower);
+		}
+end
+
+rule "Extract and classify followees"
+    enabled false
+	dialect "java"
+	when
+    	twitter : Twitter()
+    then
+        for (User user : twitter.getFriends()) {
+		    Followee followee = new Followee();
+		    followee.setUser(user);
+		    followee.setFollowedBy(twitter);
+		    followee.setClassification(TwitterUserType.getType(TwitterUtils.getTwitterInfluenceRatio(user)));
+		    followee.setHasPicture(TwitterUtils.hasSetProfileImage(user));
+		    followee.setInactive(TwitterUtils.inactiveForTheLast(user, 30));
+		    followee.setAverageTweetsPerDay(TwitterUtils.averageTweetsPerDay(user));
+		    followee.setFollowersInCommon(TwitterUtils.followersInCommon(twitter, user));
+            followee.setFolloweesInCommon(TwitterUtils.followingInCommon(twitter, user));
+            followee.setScore(0.00);
+		    logger.info("Inserting followee => " + user.getScreenName());
+		    insert(followee);
+		}
+end
+
+// No picture, possible spammer
+rule "User has no picture"
+    dialect "java"
+    when
+        follower : Follower(hasPicture == false)
+    then
+        follower.setScore(follower.getScore() - 30.0);
+end
+
+// if you follow me but none of my followers follow you => possible spammer
+rule "Follower with no mutual followers"
+    dialect "java"
+    when
+        follower : Follower(followersInCommon == 0)
+    then
+        follower.setScore(follower.getScore() - 10.0);
+end
+
+// if you follow me but I'm not following back
+rule "Follower not being followed back"
+    dialect "java"
+    when
+        follower : Follower(followedBack == false)
+    then
+        follower.setScore(follower.getScore() - 5.0);
+end
+
+// somebody I follow has not tweeted for a while
+rule "Inactive followee"
+    dialect "java"
+    when
+        followee : Followee(inactive == true)
+    then
+        followee.setScore(followee.getScore() - 15.0);
+end
+
+// somebody that follows me has not tweeted for a while, spammer potential
+rule "Inactive follower"
+    dialect "java"
+    when
+        follower : Follower(inactive == true)
+    then
+        follower.setScore(follower.getScore() - 15.0);
+end
+
+rule "Low activity follower"
+    dialect "java"
+    when
+        follower : Follower(averageTweetsPerDay > 0 && averageTweetsPerDay < 0.5)
+    then
+        follower.setScore(follower.getScore() - 5.0);
+end
+
+rule "Medium activity follower"
+    dialect "java"
+    when
+        follower : Follower(averageTweetsPerDay >= 0.5 && averageTweetsPerDay < 3)
+    then
+        follower.setScore(follower.getScore() + 5.0);
+end
+
+rule "High activity follower"
+    dialect "java"
+    when
+        follower : Follower(averageTweetsPerDay >= 3 && averageTweetsPerDay < 5)
+    then
+        follower.setScore(follower.getScore() + 10.0);
+end
+
+rule "Hyper activity follower"
+    dialect "java"
+    when
+        follower : Follower(averageTweetsPerDay >= 5)
+    then
+        follower.setScore(follower.getScore() + 15.0);
+end
+
+query "followers of a given type" (TwitterUserType type)
+    follower : Follower(classification == type)
+end
+
+query "followees of a given type" (TwitterUserType type)
+    followee : Followee(classification == type)
+end
+
+query "get all followers"
+    follower : Follower()
+end
+
+query "get all followees"
+    followee : Followee()
+end
+
+
+
